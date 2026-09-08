@@ -1,0 +1,6 @@
+[package]
+name = "spaced-recall"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "A strict-by-default spaced repetition scheduler, library and CLI"
