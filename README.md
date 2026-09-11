@@ -72,6 +72,26 @@ $ srs review --interval 6 --reps 2 --ease 2.50 --due 110 --today 105 --grade 4 -
 interval=15 reps=3 ease=2.50 due=120
 ```
 
+## Deck persistence
+
+A `Deck` is a named collection of cards, saved to a plain JSON file:
+
+```rust
+use spaced_recall::{Card, Deck};
+
+let mut deck = Deck::new();
+deck.cards.insert("capital of peru".to_string(), Card::new(100));
+deck.save("deck.json").unwrap();
+
+let loaded = Deck::load("deck.json").unwrap();
+assert_eq!(loaded, deck);
+```
+
+Loading a path that doesn't exist yet returns an empty deck rather than an
+error, since a deck that has never been saved isn't a malformed one. The
+JSON reader and writer are hand-rolled rather than pulled in from a crate,
+since the on-disk schema is fixed and small.
+
 ## Building
 
 ```

@@ -8,6 +8,9 @@
 use std::error::Error;
 use std::fmt;
 
+mod deck;
+pub use deck::{Deck, DeckError};
+
 /// Recall quality for a single review, on the classic SM-2 scale.
 /// 0 means a complete blackout, 5 means perfect, effortless recall.
 pub type Grade = u8;
