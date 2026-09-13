@@ -92,6 +92,17 @@ error, since a deck that has never been saved isn't a malformed one. The
 JSON reader and writer are hand-rolled rather than pulled in from a crate,
 since the on-disk schema is fixed and small.
 
+List the cards due on or before a given day, oldest first:
+
+```
+$ srs due --deck deck.json --today 100
+capital of peru: interval=0 reps=0 ease=2.50 due=100
+```
+
+The CLI does not yet have commands to create or update named cards in a
+deck file; that's the next thing to build. For now, deck files are written
+by whatever is calling the library directly.
+
 ## Building
 
 ```
