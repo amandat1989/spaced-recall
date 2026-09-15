@@ -1,7 +1,7 @@
 use std::env;
 use std::process::ExitCode;
 
-use spaced_recall::{Card, Deck, Scheduler};
+use spaced_recall::{Card, Deck, Rating, Scheduler};
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -31,7 +31,7 @@ fn print_usage() {
     eprintln!("usage:");
     eprintln!("  srs new --today <day>");
     eprintln!(
-        "  srs review --interval <days> --reps <n> --ease <factor> --due <day> --today <day> --grade <0-5> [--lenient]"
+        "  srs review --interval <days> --reps <n> --ease <factor> --due <day> --today <day> (--grade <0-5> | --rating <again|hard|good|easy>) [--lenient]"
     );
     eprintln!("  srs due --deck <path> --today <day>");
 }
@@ -76,7 +76,7 @@ fn run_review(args: &[String]) -> ExitCode {
         Ok(v) => v,
         Err(e) => return fail(&e),
     };
-    let grade = match flags.get_u8("grade") {
+    let grade = match resolve_grade(&flags) {
         Ok(v) => v,
         Err(e) => return fail(&e),
     };
@@ -99,6 +99,22 @@ fn run_review(args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => fail(&e.to_string()),
+    }
+}
+
+/// Resolves the grade for `review` from whichever of `--grade` or `--rating`
+/// was given. Exactly one is required: allowing both would leave it unclear
+/// which one wins, and allowing neither would silently need a default.
+fn resolve_grade(flags: &Flags) -> Result<u8, String> {
+    match (flags.get_str_opt("grade"), flags.get_str_opt("rating")) {
+        (Some(_), Some(_)) => Err("pass either --grade or --rating, not both".to_string()),
+        (Some(g), None) => g
+            .parse()
+            .map_err(|_| "--grade must be a number from 0 to 255".to_string()),
+        (None, Some(r)) => Rating::from_name(r)
+            .map(Rating::to_grade)
+            .ok_or_else(|| format!("--rating must be one of again, hard, good, easy (got {r})")),
+        (None, None) => Err("missing required flag: --grade or --rating".to_string()),
     }
 }
 
@@ -176,16 +192,17 @@ impl Flags {
             .ok_or_else(|| format!("missing required flag --{name}"))
     }
 
+    fn get_str_opt(&self, name: &str) -> Option<&str> {
+        self.values
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+    }
+
     fn get_u32(&self, name: &str) -> Result<u32, String> {
         self.get_str(name)?
             .parse()
             .map_err(|_| format!("--{name} must be a whole number"))
-    }
-
-    fn get_u8(&self, name: &str) -> Result<u8, String> {
-        self.get_str(name)?
-            .parse()
-            .map_err(|_| format!("--{name} must be a number from 0 to 255"))
     }
 
     fn get_f64(&self, name: &str) -> Result<f64, String> {
@@ -263,5 +280,41 @@ mod tests {
     fn due_cards_is_empty_for_an_empty_deck() {
         let deck = Deck::new();
         assert!(due_cards(&deck, 100).is_empty());
+    }
+
+    #[test]
+    fn resolve_grade_accepts_a_raw_grade() {
+        let flags = parse_flags(&["--grade".to_string(), "4".to_string()]).unwrap();
+        assert_eq!(resolve_grade(&flags), Ok(4));
+    }
+
+    #[test]
+    fn resolve_grade_accepts_a_rating_name() {
+        let flags = parse_flags(&["--rating".to_string(), "good".to_string()]).unwrap();
+        assert_eq!(resolve_grade(&flags), Ok(4));
+    }
+
+    #[test]
+    fn resolve_grade_rejects_both_grade_and_rating() {
+        let flags = parse_flags(&[
+            "--grade".to_string(),
+            "4".to_string(),
+            "--rating".to_string(),
+            "good".to_string(),
+        ])
+        .unwrap();
+        assert!(resolve_grade(&flags).is_err());
+    }
+
+    #[test]
+    fn resolve_grade_rejects_neither_grade_nor_rating() {
+        let flags = parse_flags(&[]).unwrap();
+        assert!(resolve_grade(&flags).is_err());
+    }
+
+    #[test]
+    fn resolve_grade_rejects_an_unknown_rating_name() {
+        let flags = parse_flags(&["--rating".to_string(), "meh".to_string()]).unwrap();
+        assert!(resolve_grade(&flags).is_err());
     }
 }

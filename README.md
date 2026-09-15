@@ -42,6 +42,16 @@ let lenient = Scheduler::lenient();
 let repaired = lenient.review(&card, 9, today).unwrap();
 ```
 
+If you'd rather present Anki-style buttons than ask for a raw grade, use
+`Rating` instead. It maps onto the same 0-5 scale, so `Hard` still counts as
+a pass and `Again` still triggers a lapse:
+
+```rust
+use spaced_recall::Rating;
+
+let after_review = scheduler.review_with_rating(&card, Rating::Good, today).unwrap();
+```
+
 ## CLI usage
 
 Create a new card, due today (day 100):
@@ -70,6 +80,14 @@ Pass `--lenient` to allow it anyway:
 ```
 $ srs review --interval 6 --reps 2 --ease 2.50 --due 110 --today 105 --grade 4 --lenient
 interval=15 reps=3 ease=2.50 due=120
+```
+
+`--rating` is an alternative to `--grade` for Anki-style buttons (`again`,
+`hard`, `good`, `easy`); pass one or the other, not both:
+
+```
+$ srs review --interval 0 --reps 0 --ease 2.50 --due 100 --today 100 --rating good
+interval=1 reps=1 ease=2.50 due=101
 ```
 
 ## Deck persistence

@@ -80,6 +80,47 @@ impl fmt::Display for ScheduleError {
 
 impl Error for ScheduleError {}
 
+/// An Anki-style four-button rating.
+///
+/// This is not a different scheduling algorithm - it's a fixed mapping onto
+/// the same 0-5 grade scale `Scheduler::review` already accepts, for callers
+/// that would rather present "Again / Hard / Good / Easy" to a user than ask
+/// them to type a raw number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rating {
+    Again,
+    Hard,
+    Good,
+    Easy,
+}
+
+impl Rating {
+    /// The SM-2 grade this rating stands in for.
+    ///
+    /// `Hard` maps to `PASSING_GRADE` rather than something below it: in
+    /// Anki, Hard still counts as a successful recall, just a strained one,
+    /// so it should not trigger a lapse reset.
+    pub fn to_grade(self) -> Grade {
+        match self {
+            Rating::Again => 0,
+            Rating::Hard => PASSING_GRADE,
+            Rating::Good => 4,
+            Rating::Easy => MAX_GRADE,
+        }
+    }
+
+    /// Parses the lowercase button name used on the command line.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "again" => Some(Rating::Again),
+            "hard" => Some(Rating::Hard),
+            "good" => Some(Rating::Good),
+            "easy" => Some(Rating::Easy),
+            _ => None,
+        }
+    }
+}
+
 /// Computes the next scheduling state for a card after a review.
 ///
 /// A `Scheduler` is either strict or lenient. Strict is the default and the
@@ -131,6 +172,18 @@ impl Scheduler {
             .ok_or(ScheduleError::DateOverflow)?;
 
         Ok(next)
+    }
+
+    /// Same as `review`, but takes an Anki-style button press instead of a
+    /// raw grade. Since a `Rating` is always in range, this only fails on
+    /// ease or timing problems, never on `ScheduleError::GradeOutOfRange`.
+    pub fn review_with_rating(
+        &self,
+        card: &Card,
+        rating: Rating,
+        today: u32,
+    ) -> Result<Card, ScheduleError> {
+        self.review(card, rating.to_grade(), today)
     }
 
     fn checked_grade(&self, grade: Grade) -> Result<Grade, ScheduleError> {
@@ -234,5 +287,36 @@ mod tests {
 
         let err = scheduler.review(&card, 9, 0).unwrap_err();
         assert_eq!(err, ScheduleError::GradeOutOfRange(9));
+    }
+
+    #[test]
+    fn rating_names_round_trip_to_the_expected_grades() {
+        assert_eq!(Rating::from_name("again").unwrap().to_grade(), 0);
+        assert_eq!(Rating::from_name("hard").unwrap().to_grade(), PASSING_GRADE);
+        assert_eq!(Rating::from_name("good").unwrap().to_grade(), 4);
+        assert_eq!(Rating::from_name("easy").unwrap().to_grade(), MAX_GRADE);
+        assert!(Rating::from_name("meh").is_none());
+    }
+
+    #[test]
+    fn again_is_a_lapse_but_hard_is_not() {
+        let scheduler = Scheduler::strict();
+        let card = Card {
+            interval_days: 20,
+            repetitions: 4,
+            ease: 2.3,
+            due_on: 50,
+        };
+
+        let after_again = scheduler
+            .review_with_rating(&card, Rating::Again, 50)
+            .unwrap();
+        assert_eq!(after_again.repetitions, 0);
+        assert_eq!(after_again.interval_days, 1);
+
+        let after_hard = scheduler
+            .review_with_rating(&card, Rating::Hard, 50)
+            .unwrap();
+        assert_eq!(after_hard.repetitions, 5);
     }
 }
