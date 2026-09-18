@@ -31,7 +31,7 @@ fn print_usage() {
     eprintln!("usage:");
     eprintln!("  srs new --today <day>");
     eprintln!(
-        "  srs review --interval <days> --reps <n> --ease <factor> --due <day> --today <day> (--grade <0-5> | --rating <again|hard|good|easy>) [--lenient]"
+        "  srs review --interval <days> --reps <n> --ease <factor> --due <day> --today <day> (--grade <0-5> | --rating <again|hard|good|easy>) [--lenient] [--fuzz <seed>]"
     );
     eprintln!("  srs due --deck <path> --today <day>");
 }
@@ -87,11 +87,18 @@ fn run_review(args: &[String]) -> ExitCode {
         ease,
         due_on,
     };
-    let scheduler = if flags.has_switch("lenient") {
+    let mut scheduler = if flags.has_switch("lenient") {
         Scheduler::lenient()
     } else {
         Scheduler::strict()
     };
+    if let Some(seed) = flags.get_str_opt("fuzz") {
+        let seed: u64 = match seed.parse() {
+            Ok(v) => v,
+            Err(_) => return fail("--fuzz must be a whole number"),
+        };
+        scheduler = scheduler.with_fuzz(seed);
+    }
 
     match scheduler.review(&card, grade, today) {
         Ok(next) => {

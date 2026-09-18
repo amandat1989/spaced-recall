@@ -90,6 +90,15 @@ $ srs review --interval 0 --reps 0 --ease 2.50 --due 100 --today 100 --rating go
 interval=1 reps=1 ease=2.50 due=101
 ```
 
+Without fuzzing, every card with the same interval and ease lands on the
+same due date, so a deck reviewed in one sitting stays clumped together on
+every later review too. Pass `--fuzz <seed>` to jitter the interval by a
+few percent instead (intervals shorter than three days are left alone -
+there's not enough room to jitter them). The jitter is a deterministic
+function of the seed, the interval, and today's date, so the same command
+always produces the same result; use a different seed per card (a hash of
+its name, say) so a deck spreads apart instead of moving in lockstep.
+
 ## Deck persistence
 
 A `Deck` is a named collection of cards, saved to a plain JSON file:
@@ -136,4 +145,7 @@ The scheduler implements the classic SuperMemo SM-2 update: two fixed
 intervals for the first two successful reviews (1 day, then 6 days), then
 `previous_interval * ease` after that; a lapse (grade below 3) resets the
 repetition count and drops the interval back to 1 day; the ease factor is
-adjusted after every review and floored at 1.3.
+adjusted after every review and floored at 1.3. Fuzzing, when turned on
+with `Scheduler::with_fuzz`, jitters the resulting interval by up to 5%
+(at least one day) so cards scheduled together don't stay glued to the
+same due date forever.

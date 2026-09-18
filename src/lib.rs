@@ -5,8 +5,10 @@
 //! opinion about time zones or clocks. The CLI derives them from the system
 //! clock; other callers can use whatever counter fits.
 
+use std::collections::hash_map::DefaultHasher;
 use std::error::Error;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 
 mod deck;
 pub use deck::{Deck, DeckError};
@@ -27,6 +29,11 @@ pub const PASSING_GRADE: Grade = 3;
 pub const MIN_EASE: f64 = 1.3;
 
 pub const DEFAULT_EASE: f64 = 2.5;
+
+/// Intervals shorter than this are never fuzzed. A one or two day interval
+/// has too little room to jitter without either doing nothing or being
+/// rounded away entirely, so it's left exact.
+pub const FUZZ_MIN_INTERVAL: u32 = 3;
 
 /// The scheduling state of a single card.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -128,18 +135,46 @@ impl Rating {
 /// so bad data never reaches the schedule. Lenient exists for scripts and
 /// imports of messy external data, where clamping the input to something
 /// sane is preferable to stopping a batch job on the first bad record.
+///
+/// Fuzzing is off by default. Without it, every card that shares an ease
+/// factor and review history ends up on the exact same due date as every
+/// other one that started at the same time, so a deck reviewed together
+/// stays clumped together forever. Turn it on with `with_fuzz` to spread
+/// intervals out by a few percent.
 #[derive(Debug, Clone, Copy)]
 pub struct Scheduler {
     pub strict: bool,
+    fuzz_seed: Option<u64>,
 }
 
 impl Scheduler {
     pub fn strict() -> Self {
-        Scheduler { strict: true }
+        Scheduler {
+            strict: true,
+            fuzz_seed: None,
+        }
     }
 
     pub fn lenient() -> Self {
-        Scheduler { strict: false }
+        Scheduler {
+            strict: false,
+            fuzz_seed: None,
+        }
+    }
+
+    /// Enables interval fuzzing, seeded by `seed`.
+    ///
+    /// The same `(seed, today, interval)` triple always fuzzes to the same
+    /// result, so a review is still reproducible for testing - the point is
+    /// only to decorrelate cards from each other, not to be unpredictable
+    /// from run to run. Callers that want different cards to land on
+    /// different days should pass a seed derived from something stable per
+    /// card, such as a hash of its name.
+    pub fn with_fuzz(self, seed: u64) -> Self {
+        Scheduler {
+            fuzz_seed: Some(seed),
+            ..self
+        }
     }
 
     /// Reviews `card` with the given `grade` on day `today`, returning the
@@ -166,6 +201,10 @@ impl Scheduler {
         let g = grade as f64;
         let ease_delta = 0.1 - (5.0 - g) * (0.08 + (5.0 - g) * 0.02);
         next.ease = (ease_in + ease_delta).max(MIN_EASE);
+
+        if let Some(seed) = self.fuzz_seed {
+            next.interval_days = fuzz_interval(seed, today, next.interval_days);
+        }
 
         next.due_on = today
             .checked_add(next.interval_days)
@@ -220,6 +259,27 @@ impl Scheduler {
             Ok(())
         }
     }
+}
+
+/// Jitters `interval_days` by up to 5% (at least one day) so that cards
+/// which would otherwise land on the same due date spread out over a few
+/// days instead. Deterministic in `seed`, `today`, and `interval_days` so
+/// the same review always fuzzes the same way; varying `seed` per card is
+/// what actually decorrelates a deck.
+fn fuzz_interval(seed: u64, today: u32, interval_days: u32) -> u32 {
+    if interval_days < FUZZ_MIN_INTERVAL {
+        return interval_days;
+    }
+
+    let range = (interval_days / 20).max(1);
+    let mut hasher = DefaultHasher::new();
+    seed.hash(&mut hasher);
+    today.hash(&mut hasher);
+    interval_days.hash(&mut hasher);
+    let bucket_count = 2 * range + 1;
+    let offset = (hasher.finish() % bucket_count as u64) as i64 - range as i64;
+
+    (interval_days as i64 + offset).max(1) as u32
 }
 
 #[cfg(test)]
@@ -318,5 +378,90 @@ mod tests {
             .review_with_rating(&card, Rating::Hard, 50)
             .unwrap();
         assert_eq!(after_hard.repetitions, 5);
+    }
+
+    #[test]
+    fn without_fuzz_identical_cards_land_on_the_same_day() {
+        let scheduler = Scheduler::strict();
+        let card = Card {
+            interval_days: 20,
+            repetitions: 3,
+            ease: 2.0,
+            due_on: 50,
+        };
+
+        let a = scheduler.review(&card, 4, 50).unwrap();
+        let b = scheduler.review(&card, 4, 50).unwrap();
+        assert_eq!(a.due_on, b.due_on);
+    }
+
+    #[test]
+    fn fuzz_spreads_identical_cards_across_different_seeds() {
+        let card = Card {
+            interval_days: 20,
+            repetitions: 3,
+            ease: 2.0,
+            due_on: 50,
+        };
+
+        let due_on_for_seed = |seed: u64| {
+            Scheduler::strict()
+                .with_fuzz(seed)
+                .review(&card, 4, 50)
+                .unwrap()
+                .due_on
+        };
+
+        let due_dates: std::collections::BTreeSet<u32> =
+            (0..20).map(due_on_for_seed).collect();
+        assert!(
+            due_dates.len() > 1,
+            "expected different seeds to land on different days, got {due_dates:?}"
+        );
+    }
+
+    #[test]
+    fn fuzz_is_reproducible_for_the_same_seed() {
+        let scheduler = Scheduler::strict().with_fuzz(42);
+        let card = Card {
+            interval_days: 20,
+            repetitions: 3,
+            ease: 2.0,
+            due_on: 50,
+        };
+
+        let a = scheduler.review(&card, 4, 50).unwrap();
+        let b = scheduler.review(&card, 4, 50).unwrap();
+        assert_eq!(a.due_on, b.due_on);
+    }
+
+    #[test]
+    fn fuzz_leaves_short_intervals_untouched() {
+        let scheduler = Scheduler::strict().with_fuzz(7);
+        let card = Card::new(0);
+
+        let after_first = scheduler.review(&card, 4, 0).unwrap();
+        assert_eq!(after_first.interval_days, 1);
+
+        let after_second = scheduler.review(&after_first, 4, 1).unwrap();
+        assert_eq!(after_second.interval_days, 6);
+    }
+
+    #[test]
+    fn fuzz_never_produces_a_zero_or_negative_interval() {
+        let card = Card {
+            interval_days: 3,
+            repetitions: 3,
+            ease: 1.3,
+            due_on: 0,
+        };
+
+        for seed in 0..50 {
+            let next = Scheduler::strict()
+                .with_fuzz(seed)
+                .review(&card, 4, 0)
+                .unwrap();
+            assert!(next.interval_days >= 1);
+        }
     }
 }
