@@ -126,9 +126,33 @@ $ srs due --deck deck.json --today 100
 capital of peru: interval=0 reps=0 ease=2.50 due=100
 ```
 
+A deck can also be read from and written to a plain text format: one card
+per line, tab-separated, as `name  interval_days  repetitions  ease  due_on`.
+It carries the same information as the JSON file but is easier to skim or
+patch by hand in an editor:
+
+```rust
+use spaced_recall::Deck;
+
+let mut deck = Deck::new();
+deck.cards.insert("capital of peru".to_string(), spaced_recall::Card::new(100));
+deck.export_text("deck.txt").unwrap();
+
+let loaded = Deck::import_text("deck.txt").unwrap();
+assert_eq!(loaded, deck);
+```
+
+Parsing rejects a line with the wrong number of fields, a field that doesn't
+parse as a number, or a duplicate card name; blank lines are skipped so a
+trailing newline at end of file is fine. A card name containing a tab or
+newline can't be written out this way, since those characters are the
+format's own separators - `to_text` and `export_text` return an error
+rather than silently mangling the name.
+
 The CLI does not yet have commands to create or update named cards in a
-deck file; that's the next thing to build. For now, deck files are written
-by whatever is calling the library directly.
+deck file, or to import/export through the plain text format; that's the
+next thing to build. For now, deck files are written by whatever is calling
+the library directly.
 
 ## Building
 

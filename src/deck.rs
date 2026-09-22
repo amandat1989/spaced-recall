@@ -25,6 +25,7 @@ pub struct Deck {
 pub enum DeckError {
     Io(std::io::Error),
     Parse(String),
+    InvalidName(String),
 }
 
 impl fmt::Display for DeckError {
@@ -32,6 +33,10 @@ impl fmt::Display for DeckError {
         match self {
             DeckError::Io(e) => write!(f, "{e}"),
             DeckError::Parse(msg) => write!(f, "malformed deck file: {msg}"),
+            DeckError::InvalidName(name) => write!(
+                f,
+                "card name \"{name}\" contains a tab or newline, which the plain text format uses as a field separator"
+            ),
         }
     }
 }
@@ -95,6 +100,90 @@ impl Deck {
         }
         deck_from_value(value)
     }
+
+    /// Loads a deck from a plain text file, one card per line. See
+    /// `to_text` for the format.
+    pub fn import_text(path: impl AsRef<Path>) -> Result<Self, DeckError> {
+        let text = fs::read_to_string(path)?;
+        Deck::from_text(&text)
+    }
+
+    /// Saves a deck to a plain text file. See `to_text` for the format.
+    pub fn export_text(&self, path: impl AsRef<Path>) -> Result<(), DeckError> {
+        let text = self.to_text()?;
+        fs::write(path, text)?;
+        Ok(())
+    }
+
+    /// Renders the deck as plain text: one card per line, fields separated
+    /// by tabs, in `name interval_days repetitions ease due_on` order.
+    ///
+    /// This exists alongside the JSON format for decks that get hand-edited
+    /// or diffed line by line - a tab-separated line is easier to skim and
+    /// patch in an editor than a JSON object is.
+    pub fn to_text(&self) -> Result<String, DeckError> {
+        let mut out = String::new();
+        for (name, card) in &self.cards {
+            if name.contains(['\t', '\n', '\r']) {
+                return Err(DeckError::InvalidName(name.clone()));
+            }
+            out.push_str(name);
+            out.push('\t');
+            out.push_str(&card.interval_days.to_string());
+            out.push('\t');
+            out.push_str(&card.repetitions.to_string());
+            out.push('\t');
+            out.push_str(&card.ease.to_string());
+            out.push('\t');
+            out.push_str(&card.due_on.to_string());
+            out.push('\n');
+        }
+        Ok(out)
+    }
+
+    /// Parses the plain text format written by `to_text`. Blank lines are
+    /// skipped so a trailing newline at end of file is not an error.
+    pub fn from_text(text: &str) -> Result<Self, DeckError> {
+        let mut cards = BTreeMap::new();
+        for (i, line) in text.lines().enumerate() {
+            if line.is_empty() {
+                continue;
+            }
+            let line_no = i + 1;
+            let fields: Vec<&str> = line.split('\t').collect();
+            let [name, interval_days, repetitions, ease, due_on] = fields.as_slice() else {
+                return Err(DeckError::Parse(format!(
+                    "line {line_no}: expected 5 tab-separated fields, got {}",
+                    fields.len()
+                )));
+            };
+            if name.is_empty() {
+                return Err(DeckError::Parse(format!("line {line_no}: card name is empty")));
+            }
+            let card = Card {
+                interval_days: parse_text_field(interval_days, "interval_days", line_no)?,
+                repetitions: parse_text_field(repetitions, "repetitions", line_no)?,
+                ease: parse_text_field(ease, "ease", line_no)?,
+                due_on: parse_text_field(due_on, "due_on", line_no)?,
+            };
+            if cards.insert(name.to_string(), card).is_some() {
+                return Err(DeckError::Parse(format!(
+                    "line {line_no}: duplicate card name \"{name}\""
+                )));
+            }
+        }
+        Ok(Deck { cards })
+    }
+}
+
+fn parse_text_field<T: std::str::FromStr>(
+    field: &str,
+    name: &str,
+    line_no: usize,
+) -> Result<T, DeckError> {
+    field
+        .parse()
+        .map_err(|_| DeckError::Parse(format!("line {line_no}: field \"{name}\" is malformed")))
 }
 
 fn escape_into(s: &str, out: &mut String) {
@@ -427,5 +516,82 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("due_on"));
+    }
+
+    #[test]
+    fn round_trips_a_deck_through_plain_text() {
+        let mut deck = Deck::new();
+        deck.cards.insert(
+            "capital of peru".to_string(),
+            Card {
+                interval_days: 6,
+                repetitions: 2,
+                ease: 2.5,
+                due_on: 110,
+            },
+        );
+        deck.cards.insert("second card".to_string(), Card::new(0));
+
+        let text = deck.to_text().unwrap();
+        let restored = Deck::from_text(&text).unwrap();
+        assert_eq!(restored, deck);
+    }
+
+    #[test]
+    fn exports_and_imports_plain_text_from_disk() {
+        let path = scratch_path("text-roundtrip");
+        let mut deck = Deck::new();
+        deck.cards.insert("front".to_string(), Card::new(5));
+
+        deck.export_text(&path).unwrap();
+        let loaded = Deck::import_text(&path).unwrap();
+        fs::remove_file(&path).unwrap();
+
+        assert_eq!(loaded, deck);
+    }
+
+    #[test]
+    fn plain_text_skips_blank_lines() {
+        let deck = Deck::from_text("front\t1\t1\t2.5\t10\n\n\n").unwrap();
+        assert_eq!(deck.cards.len(), 1);
+    }
+
+    #[test]
+    fn plain_text_rejects_a_line_with_the_wrong_number_of_fields() {
+        let err = Deck::from_text("front\t1\t1\t2.5\n").unwrap_err();
+        match err {
+            DeckError::Parse(msg) => assert!(msg.contains("5 tab-separated fields")),
+            other => panic!("expected a parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plain_text_rejects_a_malformed_number_field() {
+        let err = Deck::from_text("front\tnot-a-number\t1\t2.5\t10\n").unwrap_err();
+        match err {
+            DeckError::Parse(msg) => assert!(msg.contains("interval_days")),
+            other => panic!("expected a parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plain_text_rejects_a_duplicate_card_name() {
+        let err = Deck::from_text("front\t1\t1\t2.5\t10\nfront\t2\t2\t2.5\t20\n").unwrap_err();
+        match err {
+            DeckError::Parse(msg) => assert!(msg.contains("duplicate")),
+            other => panic!("expected a parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plain_text_export_rejects_a_name_with_a_tab() {
+        let mut deck = Deck::new();
+        deck.cards.insert("bad\tname".to_string(), Card::new(0));
+
+        let err = deck.to_text().unwrap_err();
+        match err {
+            DeckError::InvalidName(name) => assert_eq!(name, "bad\tname"),
+            other => panic!("expected an invalid name error, got {other:?}"),
+        }
     }
 }
